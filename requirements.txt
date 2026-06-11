@@ -6,3 +6,4 @@ scikit-learn
 requests
 plotly
 beautifulsoup4
+OpenAI
