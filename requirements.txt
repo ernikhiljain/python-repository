@@ -7,3 +7,4 @@ requests
 plotly
 beautifulsoup4
 OpenAI
+openpyxl
