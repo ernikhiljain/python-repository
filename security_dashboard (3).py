@@ -243,32 +243,113 @@ _SUPPORTED_EXTS = {
     ".scala", ".kt", ".rs", ".swift", ".sh", ".yaml", ".yml",
 }
 
-_VULN_PATTERNS = [
-    r'`([A-Za-z_][A-Za-z0-9_.]{2,})`',
+# ── CVE: context-aware affected-component extraction ──────────────────────────
+# These patterns look for what the description says will IMPACT you if used.
+_CVE_AFFECTED_PATTERNS = [
+    # "applications using X", "systems using X", "code using X"
+    r'(?:applications?|systems?|code|software|projects?|products?)\s+(?:that\s+)?use[sd]?\s+["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?',
+    # "when X is used", "if X is enabled", "if X is called"
+    r'when\s+["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?\s+is\s+(?:used|enabled|called|loaded|imported|invoked|instantiated)',
+    r'if\s+["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?\s+is\s+(?:used|enabled|called|loaded|imported|invoked)',
+    # "via the X function/method/module/feature/API/endpoint/component"
+    r'via\s+(?:the\s+)?["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?\s+(?:function|method|module|feature|API|endpoint|component|class|interface|library|handler|parser|processor)',
+    # "in the X function/module/component"
+    r'in\s+(?:the\s+)?["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?\s+(?:function|method|module|feature|component|class|handler|parser|processor)',
+    # "the X function/method/module/component/feature"
+    r'(?:the\s+)["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?\s+(?:function|method|module|component|feature|handler|parser|processor|class|endpoint)',
+    # "X() function" or "X() method"  — catches bare function references
+    r'["\']?([A-Za-z_][A-Za-z0-9_.]{2,})\(\)["\']?\s+(?:function|method)',
+    # "import X", "require X", "include X", "use X" — dependency keywords
+    r'(?:import|require|include|from|use)\s+["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?',
+    # backtick or double-quoted identifiers (inline code in descriptions)
+    r'`([A-Za-z_][A-Za-z0-9_.:-]{2,})`',
     r'"([A-Za-z_][A-Za-z0-9_.]{2,})"',
-    r"\b([A-Za-z_][A-Za-z0-9_]*(?:Parser|Handler|Manager|Client|Server"
-    r"|Util|Helper|Builder|Factory|Engine|Reader|Writer|Loader"
-    r"|Executor|Processor|Deserializer|Serializer))\b",
-    r'\b(eval|exec|deserializ\w*|unpickl\w*|yaml\.load|pickle\.load'
+    # "affects X", "impacts X", "exploits X"
+    r'(?:affects?|impacts?|exploits?)\s+["\']?([A-Za-z_][A-Za-z0-9_.:-]{2,})["\']?',
+    # dangerous API names — always extract these regardless of context
+    r'\b(eval|exec|deserializ\w+|unpickl\w+|yaml\.load|pickle\.load'
     r'|subprocess|os\.system|Runtime\.exec|ObjectInputStream|XStream'
-    r'|Kryo|Gson|Jackson|XMLDecoder|Unmarshaller|Inflater'
-    r'|ZipInputStream|ProcessBuilder|ScriptEngine|GroovyShell'
-    r'|BeanUtils|PropertyUtils|OGNL|ClassLoader|forName|loadClass'
-    r'|getMethod|invoke)\b',
-    r'(?:function|method|API|endpoint|feature|module|class|package)\s+'
-    r'["\']?([A-Za-z_][A-Za-z0-9_.]{2,})["\']?',
-    r'\b([A-Za-z]{3,}_[A-Za-z]{3,})\b',
+    r'|Kryo|Gson|Jackson|XMLDecoder|Unmarshaller|ZipInputStream'
+    r'|ProcessBuilder|ScriptEngine|GroovyShell|ClassLoader|loadClass'
+    r'|forName|getMethod|invoke|BeanUtils|PropertyUtils|OGNL)\b',
+    # class-suffix patterns that strongly indicate a component
+    r'\b([A-Za-z_][A-Za-z0-9_]*(?:Parser|Handler|Manager|Client|Server'
+    r'|Deserializer|Serializer|Executor|Processor|Loader|Factory|Engine'
+    r'|Reader|Writer|Builder|Resolver|Dispatcher|Interceptor|Filter|Codec))\b',
 ]
 
-def _extract_vuln_tokens(description: str) -> list:
+# ── CIS: control-implementation keyword extraction ────────────────────────────
+# These phrases indicate WHAT the control requires to be configured/present.
+_CIS_CONTROL_PATTERNS = [
+    # "Ensure X is set", "Ensure X is configured", "Ensure X is enabled/disabled"
+    r'[Ee]nsure\s+["\']?([A-Za-z_][A-Za-z0-9_.\s/-]{2,30})["\']?\s+is\s+(?:set|configured|enabled|disabled|installed|present|not\s+\w+)',
+    # "set X to", "configure X"
+    r'(?:set|configure|enable|disable)\s+["\']?([A-Za-z_][A-Za-z0-9_./-]{2,30})["\']?',
+    # config file directives: "PermitRootLogin no", "noexec", "nosuid"
+    r'\b(PermitRoot\w+|MaxAuth\w+|LoginGrace\w+|AllowTcp\w+|X11Forward\w+'
+    r'|noexec|nosuid|nodev|ro\b|chmod|chown|umask|ulimit'
+    r'|auditd|audit\.rules|sysctl|grub|selinux|apparmor'
+    r'|firewall|iptables|nftables|ufw|fail2ban|pam_\w+'
+    r'|password\s+requisite|password\s+required|auth\s+required'
+    r'|PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_MIN_LEN|PASS_WARN_AGE'
+    r'|StrictModes|HostbasedAuthentication|IgnoreUserKnownHosts'
+    r'|PasswordAuthentication|ChallengeResponseAuthentication'
+    r'|UsePAM|AllowAgentForwarding|AllowStreamLocalForwarding'
+    r'|ClientAliveInterval|ClientAliveCountMax|LoginGraceTime'
+    r'|MaxSessions|TCPKeepAlive|Compression|LogLevel|SyslogFacility)\b',
+    # quoted config values: "value 'xyz'"
+    r"'([A-Za-z_][A-Za-z0-9_./-]{2,30})'",
+    # backtick identifiers in description
+    r'`([A-Za-z_][A-Za-z0-9_./-]{2,30})`',
+    # file paths that should exist or be configured
+    r'(/etc/[A-Za-z0-9_./-]{3,40})',
+    r'(/var/[A-Za-z0-9_./-]{3,30})',
+    # service names
+    r'\b(sshd|crond|auditd|rsyslog|firewalld|chronyd|ntpd|named|postfix'
+    r'|vsftpd|apache2|nginx|tomcat|docker|containerd|snapd|avahi)\b',
+]
+
+_STOPWORDS = {
+    "the", "this", "that", "with", "from", "have", "been", "when",
+    "which", "they", "their", "there", "than", "then", "also", "into",
+    "more", "some", "such", "will", "can", "may", "not", "are", "and",
+    "for", "its", "via", "use", "used", "all", "any", "but", "out",
+    "one", "two", "new", "set", "get", "run", "key", "via", "org",
+    "com", "net", "www", "http", "https", "file", "data", "code",
+    "user", "version", "system", "allow", "using", "should", "could",
+}
+
+def _clean_token(t: str) -> str:
+    return t.strip("`\"' \t\n/").rstrip("()/.,;:")
+
+def _extract_affected_tokens_cve(description: str) -> list:
+    """Extract the actual affected functions/modules/components from a CVE description."""
     if not description:
         return []
     found = set()
-    for pat in _VULN_PATTERNS:
+    for pat in _CVE_AFFECTED_PATTERNS:
         for match in re.findall(pat, description, re.IGNORECASE):
-            token = match if isinstance(match, str) else " ".join(match)
-            token = token.strip("`\"' ").rstrip("()")
-            if len(token) > 2 and not token.isdigit():
+            token = _clean_token(match if isinstance(match, str) else " ".join(match))
+            # keep only tokens that look like real identifiers/paths
+            if (len(token) > 2
+                    and not token.isdigit()
+                    and token.lower() not in _STOPWORDS
+                    and re.search(r'[A-Za-z]', token)):
+                found.add(token.lower())
+    return sorted(found)
+
+def _extract_control_tokens_cis(description: str) -> list:
+    """Extract what a CIS control REQUIRES to be implemented (config keys, file paths, services)."""
+    if not description:
+        return []
+    found = set()
+    for pat in _CIS_CONTROL_PATTERNS:
+        for match in re.findall(pat, description, re.IGNORECASE):
+            token = _clean_token(match if isinstance(match, str) else " ".join(match))
+            if (len(token) > 2
+                    and not token.isdigit()
+                    and token.lower() not in _STOPWORDS
+                    and re.search(r'[A-Za-z]', token)):
                 found.add(token.lower())
     return sorted(found)
 
@@ -302,9 +383,13 @@ def _search_code(pattern: str, file_contents: dict) -> list:
                     return hits
     return hits
 
-def _run_exposure(description: str, file_contents: dict) -> tuple:
-    """Returns (verdict, matched_patterns_str, code_matches_list)."""
-    tokens = _extract_vuln_tokens(description)
+def _run_cve_exposure(description: str, file_contents: dict) -> tuple:
+    """
+    CVE exposure: extracts the AFFECTED component/function from the description,
+    then searches the codebase for it.
+    Returns (verdict, affected_keywords_str, code_matches_list).
+    """
+    tokens = _extract_affected_tokens_cve(description)
     if not tokens:
         return "⚠️ Cannot be Concluded", "", []
     all_hits, matched = [], []
@@ -315,7 +400,27 @@ def _run_exposure(description: str, file_contents: dict) -> tuple:
             all_hits.extend(hits[:3])
     if all_hits:
         return "🔴 Exposed / Used", ", ".join(matched), all_hits
-    return "🟢 Not Exposed", ", ".join(tokens[:5]), []
+    return "🟢 Not Exposed", ", ".join(tokens[:6]), []
+
+def _run_cis_control_check(description: str, file_contents: dict) -> tuple:
+    """
+    CIS control check: extracts the REQUIRED configuration/setting from the description,
+    then checks if it is already implemented in the codebase.
+    Returns (verdict, required_keywords_str, code_matches_list).
+    Verdicts: Implemented / Not Implemented / Cannot be Concluded
+    """
+    tokens = _extract_control_tokens_cis(description)
+    if not tokens:
+        return "⚠️ Cannot be Concluded", "", []
+    all_hits, matched = [], []
+    for tok in tokens:
+        hits = _search_code(tok, file_contents)
+        if hits:
+            matched.append(tok)
+            all_hits.extend(hits[:3])
+    if all_hits:
+        return "✅ Implemented", ", ".join(matched), all_hits
+    return "❌ Not Implemented", ", ".join(tokens[:6]), []
 
 def _render_code_matches(matches: list):
     for m in matches:
